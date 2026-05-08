@@ -1,0 +1,8 @@
+body { font-family: Arial, sans-serif; margin: 0; background: #f6f7fb; color: #111827; }
+.container { max-width: 860px; margin: 0 auto; padding: 24px; }
+nav a { margin-right: 16px; }
+.hero { padding-top: 72px; }
+form { display: grid; gap: 12px; }
+input, textarea, button { padding: 12px; font-size: 16px; }
+button, .button { background: #111827; color: #fff; border: none; text-decoration: none; display: inline-block; padding: 12px 18px; }
+pre { background: #fff; padding: 16px; border: 1px solid #ddd; overflow-x: auto; }

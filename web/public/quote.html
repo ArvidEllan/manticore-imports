@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Request Quote</title>
+  <link rel="stylesheet" href="/css/styles.css" />
+</head>
+<body>
+  <main class="container">
+    <h1>Request a Quote</h1>
+    <form id="quoteForm">
+      <input name="customerName" placeholder="Full name" required />
+      <input name="email" type="email" placeholder="Email" required />
+      <input name="phone" placeholder="Phone" required />
+      <input name="companyName" placeholder="Company name" />
+      <input name="productName" placeholder="Product name" required />
+      <input name="productCategory" placeholder="Product category" required />
+      <input name="quantity" type="number" min="1" placeholder="Quantity" required />
+      <input name="sourceCountry" placeholder="Source country" required />
+      <input name="preferredTimeline" placeholder="Preferred timeline" />
+      <input name="productUrl" placeholder="Product URL" />
+      <textarea name="notes" placeholder="Notes"></textarea>
+      <button type="submit">Submit</button>
+    </form>
+    <pre id="result"></pre>
+  </main>
+  <script src="/js/quote.js"></script>
+</body>
+</html>

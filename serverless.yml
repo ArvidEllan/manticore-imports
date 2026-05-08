@@ -1,0 +1,158 @@
+service: manticore-imports
+frameworkVersion: '4'
+
+provider:
+  name: aws
+  runtime: provided.al2023
+  architecture: arm64
+  region: ${opt:region, 'eu-west-1'}
+  stage: ${opt:stage, 'dev'}
+  environment:
+    AWS_REGION: ${aws:region}
+    STAGE: ${sls:stage}
+    REQUESTS_TABLE: manticore-requests-${sls:stage}
+    AUDIT_TABLE: manticore-request-audit-${sls:stage}
+    DOCUMENTS_TABLE: manticore-documents-${sls:stage}
+    DOCUMENTS_BUCKET: manticore-docs-${sls:stage}
+    SES_FROM_EMAIL: noreply@manticore.com
+    ADMIN_USERNAME: admin
+    ADMIN_PASSWORD: change-me
+    JWT_SECRET: replace-this-secret
+  httpApi:
+    cors:
+      allowedOrigins:
+        - '*'
+      allowedHeaders:
+        - Content-Type
+        - Authorization
+      allowedMethods:
+        - GET
+        - POST
+        - PATCH
+        - OPTIONS
+  iam:
+    role:
+      statements:
+        - Effect: Allow
+          Action:
+            - dynamodb:PutItem
+            - dynamodb:GetItem
+            - dynamodb:UpdateItem
+            - dynamodb:Query
+            - dynamodb:Scan
+          Resource:
+            - arn:aws:dynamodb:${aws:region}:${aws:accountId}:table/manticore-requests-${sls:stage}
+            - arn:aws:dynamodb:${aws:region}:${aws:accountId}:table/manticore-requests-${sls:stage}/index/*
+            - arn:aws:dynamodb:${aws:region}:${aws:accountId}:table/manticore-request-audit-${sls:stage}
+            - arn:aws:dynamodb:${aws:region}:${aws:accountId}:table/manticore-documents-${sls:stage}
+        - Effect: Allow
+          Action:
+            - s3:PutObject
+            - s3:GetObject
+          Resource:
+            - arn:aws:s3:::manticore-docs-${sls:stage}/*
+        - Effect: Allow
+          Action:
+            - ses:SendEmail
+            - ses:SendRawEmail
+          Resource: '*'
+
+package:
+  individually: true
+
+functions:
+  api:
+    handler: bootstrap
+    package:
+      artifact: function.zip
+    events:
+      - httpApi: '*'
+
+resources:
+  Resources:
+    RequestsTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: manticore-requests-${sls:stage}
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - AttributeName: pk
+            AttributeType: S
+          - AttributeName: requestId
+            AttributeType: S
+          - AttributeName: reference
+            AttributeType: S
+          - AttributeName: status
+            AttributeType: S
+          - AttributeName: email
+            AttributeType: S
+        KeySchema:
+          - AttributeName: pk
+            KeyType: HASH
+        GlobalSecondaryIndexes:
+          - IndexName: request-id-index
+            KeySchema:
+              - AttributeName: requestId
+                KeyType: HASH
+            Projection:
+              ProjectionType: ALL
+          - IndexName: reference-index
+            KeySchema:
+              - AttributeName: reference
+                KeyType: HASH
+            Projection:
+              ProjectionType: ALL
+          - IndexName: status-index
+            KeySchema:
+              - AttributeName: status
+                KeyType: HASH
+            Projection:
+              ProjectionType: ALL
+          - IndexName: email-index
+            KeySchema:
+              - AttributeName: email
+                KeyType: HASH
+            Projection:
+              ProjectionType: ALL
+
+    AuditTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: manticore-request-audit-${sls:stage}
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - AttributeName: pk
+            AttributeType: S
+          - AttributeName: sk
+            AttributeType: S
+        KeySchema:
+          - AttributeName: pk
+            KeyType: HASH
+          - AttributeName: sk
+            KeyType: RANGE
+
+    DocumentsTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: manticore-documents-${sls:stage}
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - AttributeName: pk
+            AttributeType: S
+          - AttributeName: sk
+            AttributeType: S
+        KeySchema:
+          - AttributeName: pk
+            KeyType: HASH
+          - AttributeName: sk
+            KeyType: RANGE
+
+    DocumentsBucket:
+      Type: AWS::S3::Bucket
+      Properties:
+        BucketName: manticore-docs-${sls:stage}
+        PublicAccessBlockConfiguration:
+          BlockPublicAcls: true
+          BlockPublicPolicy: true
+          IgnorePublicAcls: true
+          RestrictPublicBuckets: true
