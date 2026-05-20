@@ -34,3 +34,18 @@ func ValidateCreateQuoteRequest(in domain.CreateQuoteRequest) error {
 	}
 	return nil
 }
+
+func ValidateScanDealsRequest(in domain.ScanDealsRequest) error {
+	query := strings.TrimSpace(in.Query)
+	productURL := strings.TrimSpace(in.ProductURL)
+	if query == "" && productURL == "" {
+		return fmt.Errorf("query or productUrl is required")
+	}
+	if in.MaxResults < 0 {
+		return fmt.Errorf("maxResults must be zero or greater")
+	}
+	if in.MaxResults > 50 {
+		return fmt.Errorf("maxResults cannot exceed 50")
+	}
+	return nil
+}

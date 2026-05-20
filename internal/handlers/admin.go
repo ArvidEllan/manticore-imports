@@ -2,22 +2,21 @@ package handlers
 
 import (
 	"context"
-
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"strings"
-	"time"
 
 	"github.com/aws/aws-lambda-go/events"
+
 	"manticore-imports/internal/domain"
 	"manticore-imports/internal/utils"
 )
 
 type AdminHandler struct {
-	Requests      requestService
-	TokenService  tokenService
-	AdminUsername string
-	AdminPassword string
+	Requests     requestService
+	Auth         authService
+	Metrics      metricsService
 }
 
 func (h *AdminHandler) Login(req events.APIGatewayV2HTTPRequest) (events.APIGatewayV2HTTPResponse, error) {
@@ -28,35 +27,61 @@ func (h *AdminHandler) Login(req events.APIGatewayV2HTTPRequest) (events.APIGate
 	if err := json.Unmarshal([]byte(req.Body), &payload); err != nil {
 		return utils.Error(http.StatusBadRequest, "invalid json body")
 	}
-	if payload.Username != h.AdminUsername || payload.Password != h.AdminPassword {
-		return utils.Error(http.StatusUnauthorized, "invalid credentials")
-	}
-	token, err := h.TokenService.Generate(payload.Username, 12*time.Hour)
+	token, authType, err := h.Auth.Login(context.Background(), payload.Username, payload.Password)
 	if err != nil {
+		if strings.Contains(err.Error(), "invalid credentials") || strings.Contains(err.Error(), "cognito auth failed") {
+			return utils.Error(http.StatusUnauthorized, "invalid credentials")
+		}
 		return utils.Error(http.StatusInternalServerError, "failed to issue token")
 	}
-	return utils.JSON(http.StatusOK, map[string]string{"token": token})
+	return utils.JSON(http.StatusOK, map[string]string{
+		"token":    token,
+		"authType": authType,
+	})
 }
 
 func (h *AdminHandler) ListRequests(req events.APIGatewayV2HTTPRequest) (events.APIGatewayV2HTTPResponse, error) {
-	if err := h.authorize(req); err != nil { return utils.Error(http.StatusUnauthorized, err.Error()) }
-	items, err := h.Requests.List(context.Background())
-	if err != nil { return utils.Error(http.StatusInternalServerError, "failed to list requests") }
-	return utils.JSON(http.StatusOK, items)
+	if err := h.authorize(req); err != nil {
+		return utils.Error(http.StatusUnauthorized, err.Error())
+	}
+	limit := int32(25)
+	if raw := req.QueryStringParameters["limit"]; raw != "" {
+		if parsed, err := strconv.ParseInt(raw, 10, 32); err == nil && parsed > 0 {
+			limit = int32(parsed)
+		}
+	}
+	page, err := h.Requests.ListPage(context.Background(), domain.ListRequestsParams{
+		Limit:  limit,
+		Cursor: req.QueryStringParameters["cursor"],
+	})
+	if err != nil {
+		return utils.Error(http.StatusInternalServerError, "failed to list requests")
+	}
+	return utils.JSON(http.StatusOK, page)
 }
 
 func (h *AdminHandler) GetRequest(req events.APIGatewayV2HTTPRequest) (events.APIGatewayV2HTTPResponse, error) {
-	if err := h.authorize(req); err != nil { return utils.Error(http.StatusUnauthorized, err.Error()) }
+	if err := h.authorize(req); err != nil {
+		return utils.Error(http.StatusUnauthorized, err.Error())
+	}
 	item, err := h.Requests.GetByID(context.Background(), req.PathParameters["id"])
-	if err != nil { return utils.Error(http.StatusInternalServerError, "failed to fetch request") }
-	if item == nil { return utils.Error(http.StatusNotFound, "request not found") }
+	if err != nil {
+		return utils.Error(http.StatusInternalServerError, "failed to fetch request")
+	}
+	if item == nil {
+		return utils.Error(http.StatusNotFound, "request not found")
+	}
 	return utils.JSON(http.StatusOK, item)
 }
 
 func (h *AdminHandler) UpdateStatus(req events.APIGatewayV2HTTPRequest) (events.APIGatewayV2HTTPResponse, error) {
 	subject, err := h.authorizeWithSubject(req)
-	if err != nil { return utils.Error(http.StatusUnauthorized, err.Error()) }
-	var payload struct { Status string `json:"status"` }
+	if err != nil {
+		return utils.Error(http.StatusUnauthorized, err.Error())
+	}
+	var payload struct {
+		Status string `json:"status"`
+	}
 	if err := json.Unmarshal([]byte(req.Body), &payload); err != nil {
 		return utils.Error(http.StatusBadRequest, "invalid json body")
 	}
@@ -69,6 +94,20 @@ func (h *AdminHandler) UpdateStatus(req events.APIGatewayV2HTTPRequest) (events.
 	return utils.JSON(http.StatusOK, map[string]string{"message": "status updated"})
 }
 
+func (h *AdminHandler) GetMetrics(req events.APIGatewayV2HTTPRequest) (events.APIGatewayV2HTTPResponse, error) {
+	if err := h.authorize(req); err != nil {
+		return utils.Error(http.StatusUnauthorized, err.Error())
+	}
+	if h.Metrics == nil {
+		return utils.Error(http.StatusServiceUnavailable, "metrics not configured")
+	}
+	snapshot, err := h.Metrics.Snapshot(context.Background())
+	if err != nil {
+		return utils.Error(http.StatusInternalServerError, "failed to fetch metrics")
+	}
+	return utils.JSON(http.StatusOK, snapshot)
+}
+
 func (h *AdminHandler) authorize(req events.APIGatewayV2HTTPRequest) error {
 	_, err := h.authorizeWithSubject(req)
 	return err
@@ -76,9 +115,11 @@ func (h *AdminHandler) authorize(req events.APIGatewayV2HTTPRequest) error {
 
 func (h *AdminHandler) authorizeWithSubject(req events.APIGatewayV2HTTPRequest) (string, error) {
 	header := req.Headers["authorization"]
-	if header == "" { header = req.Headers["Authorization"] }
+	if header == "" {
+		header = req.Headers["Authorization"]
+	}
 	if !strings.HasPrefix(header, "Bearer ") {
 		return "", http.ErrNoCookie
 	}
-	return h.TokenService.Validate(strings.TrimPrefix(header, "Bearer "))
+	return h.Auth.Validate(strings.TrimPrefix(header, "Bearer "))
 }

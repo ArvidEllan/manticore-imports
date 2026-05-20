@@ -1,4 +1,4 @@
-const apiBase = window.API_BASE_URL || "";
+const apiBase = getApiBaseUrl();
 document.getElementById("statusForm").addEventListener("submit", async (e) => {
   e.preventDefault();
   const form = new FormData(e.target);

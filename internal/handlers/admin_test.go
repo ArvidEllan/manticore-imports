@@ -6,37 +6,36 @@ import (
 	"net/http"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/aws/aws-lambda-go/events"
 	"manticore-imports/internal/domain"
 )
 
-type fakeTokenService struct {
-	generateFn func(subject string, ttl time.Duration) (string, error)
-	validateFn func(token string) (string, error)
+type fakeAuthService struct {
+	usesCognito bool
+	loginFn     func(ctx context.Context, username, password string) (string, string, error)
+	validateFn  func(token string) (string, error)
 }
 
-func (f *fakeTokenService) Generate(subject string, ttl time.Duration) (string, error) {
-	return f.generateFn(subject, ttl)
+func (f *fakeAuthService) UsesCognito() bool { return f.usesCognito }
+func (f *fakeAuthService) Login(ctx context.Context, username, password string) (string, string, error) {
+	return f.loginFn(ctx, username, password)
 }
-func (f *fakeTokenService) Validate(token string) (string, error) {
+func (f *fakeAuthService) Validate(token string) (string, error) {
 	return f.validateFn(token)
 }
 
 func TestAdminHandlerLogin(t *testing.T) {
 	h := &AdminHandler{
-		AdminUsername: "admin",
-		AdminPassword: "secret",
-		TokenService: &fakeTokenService{
-			generateFn: func(subject string, ttl time.Duration) (string, error) {
-				if subject == "err" {
-					return "", errors.New("signing failed")
+		Auth: &fakeAuthService{
+			loginFn: func(_ context.Context, username, password string) (string, string, error) {
+				if username == "err" {
+					return "", "", errors.New("signing failed")
 				}
-				if ttl != 12*time.Hour {
-					t.Fatalf("unexpected ttl: %s", ttl)
+				if username != "admin" || password != "secret" {
+					return "", "", errors.New("invalid credentials")
 				}
-				return "token-1", nil
+				return "token-1", "legacy", nil
 			},
 		},
 	}
@@ -66,8 +65,8 @@ func TestAdminHandlerLogin(t *testing.T) {
 
 func TestAdminHandlerAuthorizedEndpoints(t *testing.T) {
 	requests := &fakeRequestService{
-		listFn: func(_ context.Context) ([]domain.Request, error) {
-			return []domain.Request{{RequestID: "req-1"}}, nil
+		listPageFn: func(_ context.Context, params domain.ListRequestsParams) (*domain.PaginatedRequests, error) {
+			return &domain.PaginatedRequests{Items: []domain.Request{{RequestID: "req-1"}}, HasMore: false}, nil
 		},
 		getByIDFn: func(_ context.Context, id string) (*domain.Request, error) {
 			if id == "missing" {
@@ -90,14 +89,21 @@ func TestAdminHandlerAuthorizedEndpoints(t *testing.T) {
 	}
 	h := &AdminHandler{
 		Requests: requests,
-		TokenService: &fakeTokenService{
+		Metrics: &fakeMetricsService{
+			snapshotFn: func(_ context.Context) (*domain.MetricsSnapshot, error) {
+				return &domain.MetricsSnapshot{TotalRequests: 1, ByStatus: map[string]int{"NEW": 1}}, nil
+			},
+		},
+		Auth: &fakeAuthService{
 			validateFn: func(token string) (string, error) {
 				if token == "bad" {
 					return "", errors.New("invalid token")
 				}
 				return "admin-user", nil
 			},
-			generateFn: func(subject string, ttl time.Duration) (string, error) { return "unused", nil },
+			loginFn: func(_ context.Context, _, _ string) (string, string, error) {
+				return "unused", "legacy", nil
+			},
 		},
 	}
 
@@ -117,6 +123,21 @@ func TestAdminHandlerAuthorizedEndpoints(t *testing.T) {
 		})
 		if err != nil {
 			t.Fatalf("ListRequests returned error: %v", err)
+		}
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("expected status %d, got %d body=%s", http.StatusOK, resp.StatusCode, resp.Body)
+		}
+		if !strings.Contains(resp.Body, `"hasMore":false`) {
+			t.Fatalf("expected paginated response body=%s", resp.Body)
+		}
+	})
+
+	t.Run("GetMetrics success", func(t *testing.T) {
+		resp, err := h.GetMetrics(events.APIGatewayV2HTTPRequest{
+			Headers: map[string]string{"Authorization": "Bearer ok"},
+		})
+		if err != nil {
+			t.Fatalf("GetMetrics returned error: %v", err)
 		}
 		if resp.StatusCode != http.StatusOK {
 			t.Fatalf("expected status %d, got %d body=%s", http.StatusOK, resp.StatusCode, resp.Body)
@@ -179,4 +200,12 @@ func TestAdminHandlerAuthorizedEndpoints(t *testing.T) {
 			t.Fatalf("unexpected response body: %s", resp.Body)
 		}
 	})
+}
+
+type fakeMetricsService struct {
+	snapshotFn func(ctx context.Context) (*domain.MetricsSnapshot, error)
+}
+
+func (f *fakeMetricsService) Snapshot(ctx context.Context) (*domain.MetricsSnapshot, error) {
+	return f.snapshotFn(ctx)
 }

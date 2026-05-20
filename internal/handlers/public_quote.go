@@ -13,8 +13,9 @@ import (
 )
 
 type PublicHandler struct {
-	Requests requestService
-	Uploads  uploadService
+	Requests     requestService
+	Uploads      uploadService
+	DealScanner  dealScannerService
 }
 
 func (h *PublicHandler) CreateQuote(req events.APIGatewayV2HTTPRequest) (events.APIGatewayV2HTTPResponse, error) {

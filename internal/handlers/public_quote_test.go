@@ -12,11 +12,12 @@ import (
 )
 
 type fakeRequestService struct {
-	createQuoteFn                func(ctx context.Context, input domain.CreateQuoteRequest) (*domain.Request, error)
-	lookupByReferenceAndEmailFn  func(ctx context.Context, reference, email string) (*domain.Request, error)
-	listFn                       func(ctx context.Context) ([]domain.Request, error)
-	getByIDFn                    func(ctx context.Context, id string) (*domain.Request, error)
-	updateStatusFn               func(ctx context.Context, requestID, status, actor string) error
+	createQuoteFn               func(ctx context.Context, input domain.CreateQuoteRequest) (*domain.Request, error)
+	lookupByReferenceAndEmailFn func(ctx context.Context, reference, email string) (*domain.Request, error)
+	listFn                      func(ctx context.Context) ([]domain.Request, error)
+	listPageFn                  func(ctx context.Context, params domain.ListRequestsParams) (*domain.PaginatedRequests, error)
+	getByIDFn                   func(ctx context.Context, id string) (*domain.Request, error)
+	updateStatusFn              func(ctx context.Context, requestID, status, actor string) error
 }
 
 func (f *fakeRequestService) CreateQuote(ctx context.Context, input domain.CreateQuoteRequest) (*domain.Request, error) {
@@ -30,6 +31,12 @@ func (f *fakeRequestService) List(ctx context.Context) ([]domain.Request, error)
 		return nil, nil
 	}
 	return f.listFn(ctx)
+}
+func (f *fakeRequestService) ListPage(ctx context.Context, params domain.ListRequestsParams) (*domain.PaginatedRequests, error) {
+	if f.listPageFn == nil {
+		return &domain.PaginatedRequests{}, nil
+	}
+	return f.listPageFn(ctx, params)
 }
 func (f *fakeRequestService) GetByID(ctx context.Context, id string) (*domain.Request, error) {
 	if f.getByIDFn == nil {

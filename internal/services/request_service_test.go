@@ -12,6 +12,8 @@ type fakeRequestRepo struct {
 	createFn       func(ctx context.Context, item domain.Request) error
 	getByRefFn     func(ctx context.Context, reference string) (*domain.Request, error)
 	listFn         func(ctx context.Context) ([]domain.Request, error)
+	listPageFn     func(ctx context.Context, params domain.ListRequestsParams) (*domain.PaginatedRequests, error)
+	countByStatusFn func(ctx context.Context) (map[string]int, error)
 	getByIDFn      func(ctx context.Context, requestID string) (*domain.Request, error)
 	updateStatusFn func(ctx context.Context, requestID, status string, updatedAt string) error
 }
@@ -27,6 +29,18 @@ func (f *fakeRequestRepo) List(ctx context.Context) ([]domain.Request, error) {
 		return nil, nil
 	}
 	return f.listFn(ctx)
+}
+func (f *fakeRequestRepo) ListPage(ctx context.Context, params domain.ListRequestsParams) (*domain.PaginatedRequests, error) {
+	if f.listPageFn == nil {
+		return &domain.PaginatedRequests{}, nil
+	}
+	return f.listPageFn(ctx, params)
+}
+func (f *fakeRequestRepo) CountByStatus(ctx context.Context) (map[string]int, error) {
+	if f.countByStatusFn == nil {
+		return map[string]int{}, nil
+	}
+	return f.countByStatusFn(ctx)
 }
 func (f *fakeRequestRepo) GetByID(ctx context.Context, requestID string) (*domain.Request, error) {
 	if f.getByIDFn == nil {
@@ -50,7 +64,8 @@ func (f *fakeAuditRepo) Create(ctx context.Context, event domain.AuditEvent) err
 }
 
 type fakeEmailSender struct {
-	sendFn func(ctx context.Context, to, subject, body string) error
+	sendFn     func(ctx context.Context, to, subject, body string) error
+	sendHTMLFn func(ctx context.Context, to, subject, htmlBody, textBody string) error
 }
 
 func (f *fakeEmailSender) Send(ctx context.Context, to, subject, body string) error {
@@ -58,6 +73,15 @@ func (f *fakeEmailSender) Send(ctx context.Context, to, subject, body string) er
 		return nil
 	}
 	return f.sendFn(ctx, to, subject, body)
+}
+func (f *fakeEmailSender) SendHTML(ctx context.Context, to, subject, htmlBody, textBody string) error {
+	if f.sendHTMLFn != nil {
+		return f.sendHTMLFn(ctx, to, subject, htmlBody, textBody)
+	}
+	if f.sendFn != nil {
+		return f.sendFn(ctx, to, subject, textBody)
+	}
+	return nil
 }
 
 func TestRequestServiceCreateQuote(t *testing.T) {
@@ -80,9 +104,9 @@ func TestRequestServiceCreateQuote(t *testing.T) {
 	}
 	var emailSent bool
 	email := &fakeEmailSender{
-		sendFn: func(_ context.Context, to, subject, body string) error {
-			if to == "" || subject == "" || body == "" {
-				t.Fatalf("expected non-empty email payload")
+		sendHTMLFn: func(_ context.Context, to, subject, htmlBody, textBody string) error {
+			if to == "" || subject == "" || htmlBody == "" || textBody == "" {
+				t.Fatalf("expected non-empty html email payload")
 			}
 			emailSent = true
 			return nil

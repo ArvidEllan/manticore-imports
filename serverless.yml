@@ -14,10 +14,15 @@ provider:
     AUDIT_TABLE: manticore-request-audit-${sls:stage}
     DOCUMENTS_TABLE: manticore-documents-${sls:stage}
     DOCUMENTS_BUCKET: manticore-docs-${sls:stage}
+    FRONTEND_BUCKET: manticore-frontend-${sls:stage}
     SES_FROM_EMAIL: noreply@manticore.com
     ADMIN_USERNAME: admin
     ADMIN_PASSWORD: change-me
     JWT_SECRET: replace-this-secret
+    COGNITO_USER_POOL_ID: !Ref AdminUserPool
+    COGNITO_CLIENT_ID: !Ref AdminUserPoolClient
+    COGNITO_REGION: ${aws:region}
+    CLOUDFRONT_DOMAIN: !GetAtt FrontendDistribution.DomainName
   httpApi:
     cors:
       allowedOrigins:
@@ -30,6 +35,9 @@ provider:
         - POST
         - PATCH
         - OPTIONS
+    throttle:
+      burstLimit: 200
+      rateLimit: 100
   iam:
     role:
       statements:
@@ -56,6 +64,11 @@ provider:
             - ses:SendEmail
             - ses:SendRawEmail
           Resource: '*'
+        - Effect: Allow
+          Action:
+            - cognito-idp:InitiateAuth
+          Resource:
+            - !GetAtt AdminUserPool.Arn
 
 package:
   individually: true
@@ -156,3 +169,191 @@ resources:
           BlockPublicPolicy: true
           IgnorePublicAcls: true
           RestrictPublicBuckets: true
+
+    FrontendBucket:
+      Type: AWS::S3::Bucket
+      Properties:
+        BucketName: manticore-frontend-${sls:stage}
+        PublicAccessBlockConfiguration:
+          BlockPublicAcls: true
+          BlockPublicPolicy: true
+          IgnorePublicAcls: true
+          RestrictPublicBuckets: true
+
+    FrontendOriginAccessControl:
+      Type: AWS::CloudFront::OriginAccessControl
+      Properties:
+        OriginAccessControlConfig:
+          Name: manticore-frontend-oac-${sls:stage}
+          OriginAccessControlOriginType: s3
+          SigningBehavior: always
+          SigningProtocol: sigv4
+
+    FrontendDistribution:
+      Type: AWS::CloudFront::Distribution
+      Properties:
+        DistributionConfig:
+          Enabled: true
+          Comment: Manticore frontend ${sls:stage}
+          DefaultRootObject: index.html
+          HttpVersion: http2
+          Origins:
+            - Id: FrontendS3Origin
+              DomainName: !GetAtt FrontendBucket.RegionalDomainName
+              OriginAccessControlId: !GetAtt FrontendOriginAccessControl.Id
+              S3OriginConfig:
+                OriginAccessIdentity: ''
+          DefaultCacheBehavior:
+            TargetOriginId: FrontendS3Origin
+            ViewerProtocolPolicy: redirect-to-https
+            AllowedMethods:
+              - GET
+              - HEAD
+              - OPTIONS
+            CachedMethods:
+              - GET
+              - HEAD
+            Compress: true
+            CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
+          CustomErrorResponses:
+            - ErrorCode: 404
+              ResponseCode: 200
+              ResponsePagePath: /index.html
+            - ErrorCode: 403
+              ResponseCode: 200
+              ResponsePagePath: /index.html
+
+    FrontendBucketPolicy:
+      Type: AWS::S3::BucketPolicy
+      Properties:
+        Bucket: !Ref FrontendBucket
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+            - Sid: AllowCloudFrontServicePrincipal
+              Effect: Allow
+              Principal:
+                Service: cloudfront.amazonaws.com
+              Action: s3:GetObject
+              Resource: !Sub '${FrontendBucket.Arn}/*'
+              Condition:
+                StringEquals:
+                  AWS:SourceArn: !Sub 'arn:aws:cloudfront::${AWS::AccountId}:distribution/${FrontendDistribution}'
+
+    AdminUserPool:
+      Type: AWS::Cognito::UserPool
+      Properties:
+        UserPoolName: manticore-admin-${sls:stage}
+        AutoVerifiedAttributes:
+          - email
+        UsernameAttributes:
+          - email
+        Policies:
+          PasswordPolicy:
+            MinimumLength: 12
+            RequireLowercase: true
+            RequireNumbers: true
+            RequireSymbols: true
+            RequireUppercase: true
+        AdminCreateUserConfig:
+          AllowAdminCreateUserOnly: true
+
+    AdminUserPoolClient:
+      Type: AWS::Cognito::UserPoolClient
+      Properties:
+        ClientName: manticore-admin-client-${sls:stage}
+        UserPoolId: !Ref AdminUserPool
+        GenerateSecret: false
+        ExplicitAuthFlows:
+          - ALLOW_USER_PASSWORD_AUTH
+          - ALLOW_REFRESH_TOKEN_AUTH
+        PreventUserExistenceErrors: ENABLED
+        AccessTokenValidity: 12
+        IdTokenValidity: 12
+        RefreshTokenValidity: 30
+        TokenValidityUnits:
+          AccessToken: hours
+          IdToken: hours
+          RefreshToken: days
+
+    AdminGroup:
+      Type: AWS::Cognito::UserPoolGroup
+      Properties:
+        GroupName: admins
+        UserPoolId: !Ref AdminUserPool
+        Description: Manticore admin operators
+
+    ApiWebACL:
+      Type: AWS::WAFv2::WebACL
+      Properties:
+        Name: manticore-api-waf-${sls:stage}
+        Scope: REGIONAL
+        DefaultAction:
+          Allow: {}
+        VisibilityConfig:
+          SampledRequestsEnabled: true
+          CloudWatchMetricsEnabled: true
+          MetricName: manticoreApiWaf-${sls:stage}
+        Rules:
+          - Name: RateLimitPerIP
+            Priority: 0
+            Action:
+              Block: {}
+            Statement:
+              RateBasedStatement:
+                Limit: 2000
+                AggregateKeyType: IP
+            VisibilityConfig:
+              SampledRequestsEnabled: true
+              CloudWatchMetricsEnabled: true
+              MetricName: manticoreApiRateLimit-${sls:stage}
+          - Name: AWSManagedRulesCommonRuleSet
+            Priority: 1
+            OverrideAction:
+              None: {}
+            Statement:
+              ManagedRuleGroupStatement:
+                VendorName: AWS
+                Name: AWSManagedRulesCommonRuleSet
+            VisibilityConfig:
+              SampledRequestsEnabled: true
+              CloudWatchMetricsEnabled: true
+              MetricName: manticoreApiCommonRules-${sls:stage}
+          - Name: AWSManagedRulesKnownBadInputs
+            Priority: 2
+            OverrideAction:
+              None: {}
+            Statement:
+              ManagedRuleGroupStatement:
+                VendorName: AWS
+                Name: AWSManagedRulesKnownBadInputsRuleSet
+            VisibilityConfig:
+              SampledRequestsEnabled: true
+              CloudWatchMetricsEnabled: true
+              MetricName: manticoreApiBadInputs-${sls:stage}
+
+    ApiWebACLAssociation:
+      Type: AWS::WAFv2::WebACLAssociation
+      Properties:
+        ResourceArn: !Sub 'arn:aws:apigateway:${AWS::Region}::/apis/${HttpApi}/stages/$default'
+        WebACLArn: !GetAtt ApiWebACL.Arn
+
+  Outputs:
+    ApiUrl:
+      Description: HTTP API base URL
+      Value: !Sub 'https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com'
+    FrontendBucketName:
+      Description: S3 bucket for static frontend assets
+      Value: !Ref FrontendBucket
+    CloudFrontDistributionId:
+      Description: CloudFront distribution ID for cache invalidation
+      Value: !Ref FrontendDistribution
+    CloudFrontDomain:
+      Description: CloudFront domain for the frontend
+      Value: !GetAtt FrontendDistribution.DomainName
+    CognitoUserPoolId:
+      Description: Cognito admin user pool ID
+      Value: !Ref AdminUserPool
+    CognitoClientId:
+      Description: Cognito admin app client ID
+      Value: !Ref AdminUserPoolClient

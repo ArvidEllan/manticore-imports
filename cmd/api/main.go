@@ -9,6 +9,7 @@ import (
 	"github.com/aws/aws-lambda-go/events"
 	"github.com/aws/aws-lambda-go/lambda"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/cognitoidentityprovider"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/ses"
@@ -16,6 +17,7 @@ import (
 	appconfig "manticore-imports/internal/config"
 	"manticore-imports/internal/handlers"
 	"manticore-imports/internal/repositories"
+	"manticore-imports/internal/scanners"
 	"manticore-imports/internal/services"
 	"manticore-imports/internal/utils"
 )
@@ -46,10 +48,19 @@ func main() {
 	requestSvc := services.NewRequestService(requestRepo, auditRepo, emailSvc)
 	uploadSvc := services.NewUploadService(s3Client, cfg.DocumentsBucket)
 	tokenSvc := services.NewTokenService(cfg.JWTSecret)
+	metricsSvc := services.NewMetricsService(requestRepo)
+	dealScannerSvc := services.NewDealScannerService(scanners.DefaultRegistry())
+
+	var cognitoSvc *services.CognitoAuthService
+	if cfg.CognitoEnabled() {
+		cognitoClient := cognitoidentityprovider.NewFromConfig(awsCfg)
+		cognitoSvc = services.NewCognitoAuthService(cognitoClient, cfg.CognitoUserPoolID, cfg.CognitoClientID, cfg.CognitoRegion)
+	}
+	authSvc := services.NewAuthService(cognitoSvc, tokenSvc, cfg.AdminUsername, cfg.AdminPassword)
 
 	a := &app{
-		public: &handlers.PublicHandler{Requests: requestSvc, Uploads: uploadSvc},
-		admin: &handlers.AdminHandler{Requests: requestSvc, TokenService: tokenSvc, AdminUsername: cfg.AdminUsername, AdminPassword: cfg.AdminPassword},
+		public: &handlers.PublicHandler{Requests: requestSvc, Uploads: uploadSvc, DealScanner: dealScannerSvc},
+		admin: &handlers.AdminHandler{Requests: requestSvc, Auth: authSvc, Metrics: metricsSvc},
 	}
 
 	lambda.Start(a.handler)
@@ -69,10 +80,14 @@ func (a *app) handler(_ context.Context, req events.APIGatewayV2HTTPRequest) (ev
 		return a.public.GetStatus(req)
 	case method == http.MethodPost && path == "/public/uploads/presign":
 		return a.public.CreatePresignedUpload(req)
+	case method == http.MethodPost && path == "/public/deals/scan":
+		return a.public.ScanDeals(req)
 	case method == http.MethodPost && path == "/admin/auth/login":
 		return a.admin.Login(req)
 	case method == http.MethodGet && path == "/admin/requests":
 		return a.admin.ListRequests(req)
+	case method == http.MethodGet && path == "/admin/metrics":
+		return a.admin.GetMetrics(req)
 	case method == http.MethodGet && strings.HasPrefix(path, "/admin/requests/") && !strings.HasSuffix(path, "/status"):
 		id := strings.TrimPrefix(path, "/admin/requests/")
 		if strings.Contains(id, "/") {
